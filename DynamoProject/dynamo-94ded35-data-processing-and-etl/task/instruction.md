@@ -16,7 +16,11 @@ Resolve source versions before computing features:
 - Events: one row per normalized non-null `event_id`; greatest `ingested_at` wins, then greatest `event_record_id`.
 - Labels: one row per normalized `customer_id` and UTC `cutoff_time`; greatest `label_updated_at` wins, then greatest `label_record_id`.
 
-Timestamp comparisons use actual instants. Create one output row for every deduplicated customer crossed with every physical cutoff row where `signup_time <= cutoff_time`. Cutoff rows are not deduplicated. Each supplied cutoff is unique. A qualifying event belongs to the same normalized customer and has `event_time <= cutoff_time`. An event exactly at cutoff is included. Events after cutoff are excluded.
+When a tie-break uses record IDs (`source_record_id`, `event_record_id`, `label_record_id`, `status_record_id`), compare them as raw strings in lexicographic order (do not parse numeric suffixes).
+
+Timestamp comparisons use actual instants. Create one output row for every deduplicated customer crossed with every physical cutoff row where `signup_time <= cutoff_time`. Cutoff rows are not deduplicated. Each supplied cutoff is unique.
+
+A qualifying event at a given cutoff belongs to the same normalized customer, has `event_time <= cutoff_time`, **and** has `ingested_at <= cutoff_time`. Events are globally deduplicated first; the deduplicated winner's `ingested_at` is what is compared to the cutoff. An event whose winner was ingested after the cutoff is excluded from that cutoff even if its `event_time` predates it — this prevents feature leakage from late-arriving data corrections. An event exactly at cutoff on either bound is included.
 
 For `account_status`, choose status rows for the customer with `effective_time <= cutoff_time`; greatest `effective_time` wins, then greatest `updated_time`, then greatest `status_record_id`. Trim and lowercase the selected status. Use `unknown` if none qualifies.
 
@@ -26,10 +30,10 @@ Trim and lowercase event types; empty values are null. The normative `/app/outpu
 
 - `total_event_count`: qualifying deduplicated events.
 - `distinct_event_type_count`: distinct non-null normalized types among them.
-- `event_count_7d`: events with `event_time > cutoff_time - 7 days` and `event_time <= cutoff_time`.
-- `event_count_30d`: events with `event_time > cutoff_time - 30 days` and `event_time <= cutoff_time`.
+- `event_count_7d`: qualifying events with `event_time > cutoff_time - 7 days` and `event_time <= cutoff_time`.
+- `event_count_30d`: qualifying events with `event_time > cutoff_time - 30 days` and `event_time <= cutoff_time`.
 - `purchase_count`: qualifying events with normalized type `purchase`.
-- `purchase_amount_sum`: decimal sum of valid amounts for those purchases; a missing amount contributes zero. Format with exactly two decimal places.
+- `purchase_amount_sum`: decimal sum of valid amounts for those purchases; a missing or non-numeric amount contributes zero. Format with exactly two decimal places.
 - `days_since_last_event`: floor of elapsed seconds from the latest qualifying event to cutoff divided by 86,400; use `-1` when none qualifies.
 - `label`: the deduplicated label joined on normalized `customer_id` plus UTC `cutoff_time`; write an empty CSV field when missing.
 
