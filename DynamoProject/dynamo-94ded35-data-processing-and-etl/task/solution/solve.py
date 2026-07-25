@@ -20,6 +20,7 @@ FEATURE_COLUMNS = [
     "event_count_30d",
     "purchase_count",
     "purchase_amount_sum",
+    "purchase_amount_sum_7d",
     "days_since_last_event",
     "label",
 ]
@@ -177,6 +178,12 @@ def main() -> None:
             ]
             purchase_sum = sum((e["_amount_dec"] for e in purchase_events), Decimal("0"))
 
+            purchase_7d_events = [
+                e for e in purchase_events
+                if cutoff_time - timedelta(days=7) < e["_event_time"] <= cutoff_time
+            ]
+            purchase_sum_7d = sum((e["_amount_dec"] for e in purchase_7d_events), Decimal("0"))
+
             latest_event_time = max(
                 (e["_event_time"] for e in qualifying_events),
                 default=None,
@@ -214,6 +221,7 @@ def main() -> None:
                 ),
                 "purchase_count": str(len(purchase_events)),
                 "purchase_amount_sum": f"{purchase_sum:.2f}",
+                "purchase_amount_sum_7d": f"{purchase_sum_7d:.2f}",
                 "days_since_last_event": str(days_since_last_event),
                 "label": label_value,
             }

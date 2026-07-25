@@ -22,7 +22,7 @@ For `account_status`, choose status rows for the customer with `effective_time <
 
 Trim and lowercase event types; empty values are null. The normative `/app/output/features.csv` column order and definitions are:
 
-`customer_id,cutoff_time,account_status,total_event_count,distinct_event_type_count,event_count_7d,event_count_30d,purchase_count,purchase_amount_sum,days_since_last_event,label`
+`customer_id,cutoff_time,account_status,total_event_count,distinct_event_type_count,event_count_7d,event_count_30d,purchase_count,purchase_amount_sum,purchase_amount_sum_7d,days_since_last_event,label`
 
 - `total_event_count`: qualifying deduplicated events.
 - `distinct_event_type_count`: distinct non-null normalized types among them.
@@ -30,6 +30,7 @@ Trim and lowercase event types; empty values are null. The normative `/app/outpu
 - `event_count_30d`: events with `event_time > cutoff_time - 30 days` and `event_time <= cutoff_time`.
 - `purchase_count`: qualifying events with normalized type `purchase`.
 - `purchase_amount_sum`: decimal sum of valid amounts for those purchases; a missing amount contributes zero. Format with exactly two decimal places.
+- `purchase_amount_sum_7d`: decimal sum of valid amounts for purchase events with `event_time > cutoff_time - 7 days` and `event_time <= cutoff_time`; a missing amount contributes zero. Format with exactly two decimal places.
 - `days_since_last_event`: floor of elapsed seconds from the latest qualifying event to cutoff divided by 86,400; use `-1` when none qualifies.
 - `label`: the deduplicated label joined on normalized `customer_id` plus UTC `cutoff_time`; write an empty CSV field when missing.
 
