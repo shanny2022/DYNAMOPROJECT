@@ -124,8 +124,8 @@ def expected():
 
     # Precompute status fields.
     for row in status_raw:
-        row["_customer_id"] = norm_id(row.get("customer_id"))
-        row["_effective_time"] = instant(row["effective_time"])
+        row["_customer_id"] = norm_id(row.get("customer_id")) # type: ignore
+        row["_effective_time"] = instant(row["effective_time"]) # type: ignore
         row["_updated_time"] = instant(row["updated_time"])
         row["_status_norm"] = (row.get("status") or "").strip().lower()
 
@@ -278,6 +278,7 @@ def test_integer_fields_are_base10_strings(actual):
     for row in actual:
         for f in int_fields:
             value = row[f]
+            # Accept "0", "-1", etc.; reject empty, decimals, scientific notation.
             assert value != ""
             parsed = int(value, 10)
             assert str(parsed) == value
@@ -295,19 +296,42 @@ def test_purchase_amount_sum_has_two_decimals(actual):
 def test_adversarial_boundary_and_dedup_cases(actual):
     keyed = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
 
+    # 1) Event exactly at cutoff must be included.
     assert keyed[("C001", "2026-01-15T00:00:00Z")]["total_event_count"] == "5"
+
+    # 2) Event dedup by latest ingested_at then event_record_id:
+    #    C002 E009 should use amount=12.50 (R09 ingested later than R10).
     assert keyed[("C002", "2026-01-15T00:00:00Z")]["purchase_amount_sum"] == "13.50"
+
+    # 3) Zero-event customer rows preserved.
     assert keyed[("C005", "2026-01-15T00:00:00Z")]["total_event_count"] == "0"
     assert keyed[("C005", "2026-01-15T00:00:00Z")]["purchase_amount_sum"] == "0.00"
+
+    # 4) Exact-cutoff event on signup boundary.
     assert keyed[("C007", "2026-01-15T00:00:00Z")]["days_since_last_event"] == "0"
+
+    # 5) UTC-equivalent label time normalization for C002 @ 2026-01-15.
+    #    L18 (with -05:00) and L19 target same UTC cutoff; latest label_updated_at wins => "0".
     assert keyed[("C002", "2026-01-15T00:00:00Z")]["label"] == "0"
+
+    # 6) Status tie break at same effective_time for C003 cutoff 2026-01-15:
+    #    S08 updated later than S07 => active.
     assert keyed[("C003", "2026-01-15T00:00:00Z")]["account_status"] == "active"
+
+    # 7) Status UTC conversion case C004:
+    #    S10 updated_time has -04:00 offset and should be parsed correctly.
     assert keyed[("C004", "2026-02-01T00:00:00Z")]["account_status"] == "review"
 
 
 def test_window_boundaries(actual):
     keyed = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
+
+    # C001 @ 2026-01-15:
+    # E003 is exactly at the exclusive lower bound; E004 and E005 qualify => 2.
     assert keyed[("C001", "2026-01-15T00:00:00Z")]["event_count_7d"] == "2"
+
+    # C001 @ 2026-02-01:
+    # 30d window includes six Jan events and excludes both Dec 16 events.
     assert keyed[("C001", "2026-02-01T00:00:00Z")]["event_count_30d"] == "6"
 
 
