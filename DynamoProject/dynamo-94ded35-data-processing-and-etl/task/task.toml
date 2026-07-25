@@ -16,7 +16,7 @@ agent_tested = "Terminus-2"        # difficulty-benchmarking agent (do not chang
 task_objective = ["transform", "validate", "generate"]
 artifact_type = ["dataset_or_tabular_file", "generated_output_artifact"]
 expert_time_estimate_hours = 3
-difficulty_explanation = "The source data contains late-arriving event corrections whose ingested_at timestamps exceed the cutoff — engineers must apply point-in-time ingestion filtering (ingested_at <= cutoff) after global deduplication to prevent feature leakage. Additional traps include lexicographic record-ID tie-breaks, UTC-offset status timestamps, non-numeric purchase amounts, zero-event customer rows, and exclusive vs inclusive window boundaries."
+difficulty_explanation = "The source data contains late-arriving event corrections whose ingested_at timestamps exceed the cutoff — engineers must apply point-in-time ingestion filtering (ingested_at <= cutoff) after global deduplication to prevent feature leakage. Additional traps include lexicographic record-ID tie-breaks with non-padded IDs (for customer/event/status/label winners), UTC-offset timestamps, blank IDs that normalize to null, non-numeric purchase amounts, preserved zero-event rows, and strict exclusive lower bounds on rolling windows."
 solution_explanation = "Normalize keys and timestamps, resolve source versions deterministically, build the eligible customer-cutoff population, reconstruct as-of facts, aggregate events, join labels, and emit stable artifacts."
 verification_explanation = "Pytest independently rebuilds the expected dataset from seed inputs and checks schema, keys, ordering, feature groups, edge cases, and every validation count."
 

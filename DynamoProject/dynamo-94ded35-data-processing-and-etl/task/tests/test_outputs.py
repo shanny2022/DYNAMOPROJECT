@@ -216,6 +216,7 @@ def actual_validation():
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 def test_features_schema(actual):
+    """features.csv must expose exactly the required columns in order."""
     expected_cols = [
         "customer_id", "cutoff_time", "account_status", "total_event_count",
         "distinct_event_type_count", "event_count_7d", "event_count_30d",
@@ -225,6 +226,7 @@ def test_features_schema(actual):
 
 
 def test_features_row_count(actual):
+    """Output row count must match eligible customer/cutoff population size."""
     expected = compute_expected_rows()
     assert len(actual) == len(expected), (
         f"Expected {len(expected)} rows, got {len(actual)}"
@@ -232,6 +234,7 @@ def test_features_row_count(actual):
 
 
 def test_features_all_values(actual):
+    """Every emitted feature field must match the independently rebuilt expected values."""
     expected_rows = compute_expected_rows()
     actual_keyed  = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
     errors        = []
@@ -250,16 +253,19 @@ def test_features_all_values(actual):
 
 
 def test_features_sort_order(actual):
+    """Rows must be sorted by (customer_id, cutoff_time) ascending."""
     keys = [(r["customer_id"], r["cutoff_time"]) for r in actual]
     assert keys == sorted(keys)
 
 
 def test_features_no_duplicate_keys(actual):
+    """Each (customer_id, cutoff_time) key must appear exactly once."""
     keys = [(r["customer_id"], r["cutoff_time"]) for r in actual]
     assert len(keys) == len(set(keys)), "Duplicate (customer_id, cutoff_time) keys found"
 
 
 def test_validation_schema(actual_validation):
+    """validation.json must contain exactly the required fields."""
     required = {
         "input_customer_rows", "input_status_rows", "input_event_rows",
         "input_label_rows", "input_cutoff_rows", "deduplicated_customer_rows",
@@ -270,6 +276,7 @@ def test_validation_schema(actual_validation):
 
 
 def test_validation_input_counts(actual_validation):
+    """Input counters must equal physical source row counts (excluding headers)."""
     assert actual_validation["input_customer_rows"] == len(raw_customers)
     assert actual_validation["input_status_rows"]   == len(raw_statuses)
     assert actual_validation["input_event_rows"]    == len(raw_events)
@@ -278,11 +285,13 @@ def test_validation_input_counts(actual_validation):
 
 
 def test_validation_dedup_counts(actual_validation):
+    """Dedup counters must equal independently deduplicated source populations."""
     assert actual_validation["deduplicated_customer_rows"] == len(customers)
     assert actual_validation["deduplicated_event_rows"]    == len(events)
 
 
 def test_validation_derived_counts(actual_validation):
+    """Derived counters must match recomputed qualifying rows and null-label totals."""
     expected_rows = compute_expected_rows()
 
     # qualifying_event_cutoff_rows
@@ -337,7 +346,7 @@ def test_adversarial_boundary_and_dedup_cases(actual):
     # 5) Label dedup: C002 at Jan-15 resolves correctly.
     assert keyed[("C002", "2026-01-15T00:00:00Z")]["label"] == "0"
 
-    # 6) Customer with no prior status → "unknown".
+    # 6) Account status selection follows timestamp ordering and normalization.
     assert keyed[("C003", "2026-01-15T00:00:00Z")]["account_status"] == "active"
 
     # 7) UTC-offset timestamp on status row parsed and compared correctly.
@@ -373,3 +382,26 @@ def test_window_boundaries(actual):
 
     # C001 @ 2026-02-01: 30-day window is >2026-01-02; E001 is 2025-12-16 → excluded.
     assert keyed[("C001", "2026-02-01T00:00:00Z")]["event_count_30d"] == "6"
+
+
+def test_additional_hardening_cases(actual):
+    """Check lexicographic tie-breaks, blank-ID drops, and 30-day edge behavior on C011."""
+    keyed = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
+
+    # Customer dedup tie on updated_at uses raw lexicographic source_record_id.
+    # SRC9 > SRC10 lexicographically, so C011 keeps the earlier signup and appears at Jan-15.
+    assert ("C011", "2026-01-15T00:00:00Z") in keyed
+
+    # Status tie with same effective/updated uses raw lexicographic status_record_id.
+    # ST2 > ST10 lexicographically, then trim/lowercase produces "active".
+    assert keyed[("C011", "2026-01-31T00:00:00Z")]["account_status"] == "active"
+
+    # Event dedup tie with same ingested_at uses raw lexicographic event_record_id.
+    # ER2 > ER10, so purchase amount is 9.00 rather than 1.00.
+    assert keyed[("C011", "2026-02-01T00:00:00Z")]["purchase_amount_sum"] == "9.00"
+
+    # E051 occurs exactly at cutoff-30d for Feb-01 and must be excluded by the strict lower bound.
+    assert keyed[("C011", "2026-02-01T00:00:00Z")]["event_count_30d"] == "1"
+
+    # Blank normalized event_id rows cannot contribute features.
+    assert keyed[("C011", "2026-02-01T00:00:00Z")]["total_event_count"] == "2"
