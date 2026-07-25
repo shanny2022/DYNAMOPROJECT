@@ -30,6 +30,7 @@ FEATURE_COLUMNS = [
     "event_count_30d",
     "purchase_count",
     "purchase_amount_sum",
+    "purchase_amount_sum_7d",
     "days_since_last_event",
     "label",
 ]
@@ -124,8 +125,8 @@ def expected():
 
     # Precompute status fields.
     for row in status_raw:
-        row["_customer_id"] = norm_id(row.get("customer_id"))
-        row["_effective_time"] = instant(row["effective_time"])
+        row["_customer_id"] = norm_id(row.get("customer_id")) # type: ignore
+        row["_effective_time"] = instant(row["effective_time"]) # type: ignore
         row["_updated_time"] = instant(row["updated_time"])
         row["_status_norm"] = (row.get("status") or "").strip().lower()
 
@@ -174,6 +175,12 @@ def expected():
             purchases = [e for e in qualifying if e["_event_type_norm"] == "purchase"]
             purchase_sum = sum((e["_amount_dec"] for e in purchases), Decimal("0"))
 
+            purchases_7d = [
+                e for e in purchases
+                if cutoff_time - timedelta(days=7) < e["_event_time"] <= cutoff_time
+            ]
+            purchase_sum_7d = sum((e["_amount_dec"] for e in purchases_7d), Decimal("0"))
+
             latest_event_time = max((e["_event_time"] for e in qualifying), default=None)
             days_since_last_event = (
                 -1
@@ -209,6 +216,7 @@ def expected():
                     ),
                     "purchase_count": str(len(purchases)),
                     "purchase_amount_sum": f"{purchase_sum:.2f}",
+                    "purchase_amount_sum_7d": f"{purchase_sum_7d:.2f}",
                     "days_since_last_event": str(days_since_last_event),
                     "label": label_value,
                 }
@@ -278,6 +286,7 @@ def test_integer_fields_are_base10_strings(actual):
     for row in actual:
         for f in int_fields:
             value = row[f]
+            # Accept "0", "-1", etc.; reject empty, decimals, scientific notation.
             assert value != ""
             parsed = int(value, 10)
             assert str(parsed) == value
@@ -285,30 +294,79 @@ def test_integer_fields_are_base10_strings(actual):
 
 def test_purchase_amount_sum_has_two_decimals(actual):
     for row in actual:
-        val = row["purchase_amount_sum"]
-        assert "." in val
-        whole, frac = val.split(".", 1)
-        assert whole.lstrip("-").isdigit()
-        assert len(frac) == 2 and frac.isdigit()
+        for col in ("purchase_amount_sum", "purchase_amount_sum_7d"):
+            val = row[col]
+            assert "." in val
+            whole, frac = val.split(".", 1)
+            assert whole.lstrip("-").isdigit()
+            assert len(frac) == 2 and frac.isdigit()
 
 
 def test_adversarial_boundary_and_dedup_cases(actual):
     keyed = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
 
-    assert keyed[("C001", "2026-01-15T00:00:00Z")]["total_event_count"] == "5"
+    # 1) Event exactly at cutoff must be included; E039 (Dec 20, from winning record R41)
+    #    also qualifies at Jan 15 => total is 6.
+    assert keyed[("C001", "2026-01-15T00:00:00Z")]["total_event_count"] == "6"
+
+    # 2) Event dedup by latest ingested_at then event_record_id:
+    #    C002 E009 should use amount=12.50 (R09 ingested later than R10).
     assert keyed[("C002", "2026-01-15T00:00:00Z")]["purchase_amount_sum"] == "13.50"
+
+    # 3) Zero-event customer rows preserved.
     assert keyed[("C005", "2026-01-15T00:00:00Z")]["total_event_count"] == "0"
     assert keyed[("C005", "2026-01-15T00:00:00Z")]["purchase_amount_sum"] == "0.00"
+
+    # 4) Exact-cutoff event on signup boundary.
     assert keyed[("C007", "2026-01-15T00:00:00Z")]["days_since_last_event"] == "0"
+
+    # 5) UTC-equivalent label time normalization for C002 @ 2026-01-15.
+    #    L18 (with -05:00) and L19 target same UTC cutoff; latest label_updated_at wins => "0".
     assert keyed[("C002", "2026-01-15T00:00:00Z")]["label"] == "0"
+
+    # 6) Status tie break at same effective_time for C003 cutoff 2026-01-15:
+    #    S08 updated later than S07 => active.
     assert keyed[("C003", "2026-01-15T00:00:00Z")]["account_status"] == "active"
+
+    # 7) Status UTC conversion case C004:
+    #    S10 updated_time has -04:00 offset and should be parsed correctly.
     assert keyed[("C004", "2026-02-01T00:00:00Z")]["account_status"] == "review"
+
+    # 8) Dec-15 cutoff: C001 had no events before Dec 15 (first event is Dec 16).
+    assert keyed[("C001", "2025-12-15T00:00:00Z")]["total_event_count"] == "0"
+    assert keyed[("C001", "2025-12-15T00:00:00Z")]["account_status"] == "active"
+
+    # 9) Dec-15 cutoff: C002 has exactly one login (E008, Dec 10) — 4 full days before cutoff.
+    assert keyed[("C002", "2025-12-15T00:00:00Z")]["total_event_count"] == "1"
+    assert keyed[("C002", "2025-12-15T00:00:00Z")]["days_since_last_event"] == "4"
+
+    # 10) E039 dedup: R41 (ingested 00:03, event_time Dec 20) beats R42 (ingested 00:02,
+    #     event_time Jan 15). Only purchases with event_time IN the 7d window count.
+    #     E039's event_time is Dec 20, NOT in the Jan-15 7d window => 7d sum stays at 20.00
+    #     (only E004, Jan 8T00:00:01, is a qualifying purchase in the 7d window).
+    assert keyed[("C001", "2026-01-15T00:00:00Z")]["purchase_amount_sum_7d"] == "20.00"
+
+    # 11) C002@Jan15: E009 (Jan 15, 12.50) in 7d; E032 (Jan 2, 1.00) is not.
+    assert keyed[("C002", "2026-01-15T00:00:00Z")]["purchase_amount_sum_7d"] == "12.50"
+
+    # 12) C008@Jan15: E038 (Jan 15T00:00, 1.75 from tie-break R40>R39) is in 7d.
+    assert keyed[("C008", "2026-01-15T00:00:00Z")]["purchase_amount_sum_7d"] == "1.75"
 
 
 def test_window_boundaries(actual):
     keyed = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
-    assert keyed[("C001", "2026-01-15T00:00:00Z")]["event_count_7d"] == "3"
-    assert keyed[("C001", "2026-02-01T00:00:00Z")]["event_count_30d"] == "5"
+
+    # C001 @ 2026-01-15:
+    # E003 is exactly at the exclusive lower bound; E004 and E005 qualify => 2.
+    # E039 (Dec 20) is NOT in the 7d window even though it qualifies overall.
+    assert keyed[("C001", "2026-01-15T00:00:00Z")]["event_count_7d"] == "2"
+
+    # C001 @ 2026-01-15: 30d window (> Dec 16). E039 (Dec 20) IS in 30d => 5 events.
+    assert keyed[("C001", "2026-01-15T00:00:00Z")]["event_count_30d"] == "5"
+
+    # C001 @ 2026-02-01:
+    # 30d window (> Jan 2): six Jan events qualify; E039 (Dec 20) and Dec-16 events do not.
+    assert keyed[("C001", "2026-02-01T00:00:00Z")]["event_count_30d"] == "6"
 
 
 def test_validation_schema_and_values(expected):
