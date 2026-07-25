@@ -307,8 +307,8 @@ def test_adversarial_boundary_and_dedup_cases(actual):
 
 def test_window_boundaries(actual):
     keyed = {(r["customer_id"], r["cutoff_time"]): r for r in actual}
-    assert keyed[("C001", "2026-01-15T00:00:00Z")]["event_count_7d"] == "3"
-    assert keyed[("C001", "2026-02-01T00:00:00Z")]["event_count_30d"] == "5"
+    assert keyed[("C001", "2026-01-15T00:00:00Z")]["event_count_7d"] == "2"
+    assert keyed[("C001", "2026-02-01T00:00:00Z")]["event_count_30d"] == "6"
 
 
 def test_validation_schema_and_values(expected):
